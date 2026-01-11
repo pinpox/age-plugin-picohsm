@@ -70,7 +70,7 @@ func (p *Protocol) ReadStanza() (*Stanza, error) {
 		Args: parts[1:],
 	}
 
-	// Read body lines until we hit an empty line or another stanza
+	// Read body lines until we hit an empty line, another stanza, or a short final line
 	var bodyParts []string
 	for {
 		line, err := p.readLine()
@@ -93,6 +93,11 @@ func (p *Protocol) ReadStanza() (*Stanza, error) {
 		}
 
 		bodyParts = append(bodyParts, line)
+
+		// A short line (< 64 chars) is the final body line per age protocol
+		if len(line) < 64 {
+			break
+		}
 	}
 
 	if len(bodyParts) > 0 {
@@ -130,11 +135,6 @@ func (p *Protocol) WriteStanza(s *Stanza) error {
 	// Write the final short line (may be empty if body was multiple of 48 bytes)
 	if _, err := fmt.Fprintln(p.out, encoded); err != nil {
 		return err
-	}
-
-	// Flush output to ensure age receives the stanza immediately
-	if f, ok := p.out.(interface{ Sync() error }); ok {
-		_ = f.Sync()
 	}
 
 	return nil
