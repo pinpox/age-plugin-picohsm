@@ -14,10 +14,10 @@ const (
 	PluginName = "picohsm"
 )
 
-// EncodeRecipient encodes a public key as a recipient string.
+// EncodeRecipient encodes a P-256 public key as a recipient string.
 func EncodeRecipient(publicKey []byte) (string, error) {
-	if len(publicKey) != 32 {
-		return "", errors.New("public key must be 32 bytes")
+	if len(publicKey) != 65 {
+		return "", errors.New("public key must be 65 bytes (uncompressed P-256)")
 	}
 	s := plugin.EncodeRecipient(PluginName, publicKey)
 	if s == "" {
@@ -26,7 +26,7 @@ func EncodeRecipient(publicKey []byte) (string, error) {
 	return s, nil
 }
 
-// DecodeRecipient decodes a recipient string to a public key.
+// DecodeRecipient decodes a recipient string to a P-256 public key.
 func DecodeRecipient(s string) ([]byte, error) {
 	name, data, err := plugin.ParseRecipient(s)
 	if err != nil {
@@ -35,8 +35,8 @@ func DecodeRecipient(s string) ([]byte, error) {
 	if !strings.EqualFold(name, PluginName) {
 		return nil, fmt.Errorf("invalid recipient plugin name: %s", name)
 	}
-	if len(data) != 32 {
-		return nil, fmt.Errorf("invalid recipient data length: %d", len(data))
+	if len(data) != 65 {
+		return nil, fmt.Errorf("invalid recipient data length: %d (expected 65)", len(data))
 	}
 	return data, nil
 }

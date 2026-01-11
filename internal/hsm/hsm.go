@@ -5,18 +5,16 @@ import (
 	"encoding/asn1"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 
 	"github.com/miekg/pkcs11"
 )
 
-// X25519 curve OID per RFC 8410
-var oidX25519 = asn1.ObjectIdentifier{1, 3, 101, 110}
-
-// PKCS#11 constants not defined in miekg/pkcs11
-const (
-	CKK_EC_MONTGOMERY             = 0x00000041
-	CKM_EC_MONTGOMERY_KEY_PAIR_GEN = 0x00001055
-)
+// P-256 (secp256r1) curve OID
+var oidP256 = asn1.ObjectIdentifier{1, 2, 840, 10045, 3, 1, 7}
 
 // HSM represents a connection to a Pico HSM device.
 type HSM struct {
@@ -26,12 +24,12 @@ type HSM struct {
 	module  string
 }
 
-// Key represents an X25519 key on the HSM.
+// Key represents an EC P-256 key on the HSM.
 type Key struct {
 	Handle    pkcs11.ObjectHandle
 	Label     string
 	ID        []byte
-	PublicKey []byte // 32-byte X25519 public key
+	PublicKey []byte // 65-byte uncompressed P-256 public key (04 || X || Y)
 }
 
 // DefaultModulePaths contains common paths for the OpenSC PKCS#11 module.
@@ -41,6 +39,45 @@ var DefaultModulePaths = []string{
 	"/usr/local/lib/opensc-pkcs11.so",
 	"/opt/homebrew/lib/opensc-pkcs11.so",
 	"/usr/local/opt/opensc/lib/opensc-pkcs11.so",
+	"/run/current-system/sw/lib/opensc-pkcs11.so", // NixOS system path
+}
+
+// findModulePath attempts to find the OpenSC PKCS#11 module.
+func findModulePath() string {
+	// Check environment variable first
+	if path := os.Getenv("PICOHSM_PKCS11_MODULE"); path != "" {
+		return path
+	}
+
+	// Try default paths
+	for _, path := range DefaultModulePaths {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+
+	// Try to find via pkcs11-tool (works on NixOS with nix-shell)
+	if pkcs11Tool, err := exec.LookPath("pkcs11-tool"); err == nil {
+		// pkcs11-tool is typically in .../bin/, opensc-pkcs11.so in .../lib/
+		binDir := filepath.Dir(pkcs11Tool)
+		libPath := filepath.Join(filepath.Dir(binDir), "lib", "opensc-pkcs11.so")
+		if _, err := os.Stat(libPath); err == nil {
+			return libPath
+		}
+	}
+
+	// Try to find via pkg-config
+	if out, err := exec.Command("pkg-config", "--variable=libdir", "opensc-pkcs11").Output(); err == nil {
+		libDir := strings.TrimSpace(string(out))
+		if libDir != "" {
+			path := filepath.Join(libDir, "opensc-pkcs11.so")
+			if _, err := os.Stat(path); err == nil {
+				return path
+			}
+		}
+	}
+
+	return ""
 }
 
 // New creates a new HSM instance.
@@ -49,12 +86,15 @@ func New() *HSM {
 }
 
 // Open connects to the HSM using the specified PKCS#11 module path.
-// If modulePath is empty, it tries the default paths.
+// If modulePath is empty, it auto-detects the path.
 func (h *HSM) Open(modulePath string) error {
-	paths := []string{modulePath}
 	if modulePath == "" {
-		paths = DefaultModulePaths
+		modulePath = findModulePath()
 	}
+	if modulePath == "" {
+		return errors.New("could not find OpenSC PKCS#11 module; set PICOHSM_PKCS11_MODULE environment variable")
+	}
+	paths := []string{modulePath}
 
 	var lastErr error
 	for _, path := range paths {
@@ -143,31 +183,25 @@ func (h *HSM) Close() error {
 	return nil
 }
 
-// ListX25519Keys returns all X25519 private keys on the HSM.
-func (h *HSM) ListX25519Keys() ([]Key, error) {
+// ListP256Keys returns all P-256 private keys on the HSM.
+func (h *HSM) ListP256Keys() ([]Key, error) {
 	if h.ctx == nil {
 		return nil, errors.New("HSM not opened")
 	}
 
-	// Encode the X25519 OID for searching
-	ecParams, err := asn1.Marshal(oidX25519)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encode OID: %w", err)
-	}
-
-	// Search for private keys with X25519 curve
+	// Search for EC private keys (don't filter by EC_PARAMS as some tokens don't support it)
 	template := []*pkcs11.Attribute{
 		pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_PRIVATE_KEY),
-		pkcs11.NewAttribute(pkcs11.CKA_KEY_TYPE, CKK_EC_MONTGOMERY),
-		pkcs11.NewAttribute(pkcs11.CKA_EC_PARAMS, ecParams),
+		pkcs11.NewAttribute(pkcs11.CKA_KEY_TYPE, pkcs11.CKK_EC),
 	}
 
 	if err := h.ctx.FindObjectsInit(h.session, template); err != nil {
 		return nil, fmt.Errorf("failed to init find: %w", err)
 	}
-	defer h.ctx.FindObjectsFinal(h.session)
 
 	handles, _, err := h.ctx.FindObjects(h.session, 100)
+	h.ctx.FindObjectsFinal(h.session) // Must finalize before calling getKeyInfo which does its own find
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to find objects: %w", err)
 	}
@@ -184,23 +218,16 @@ func (h *HSM) ListX25519Keys() ([]Key, error) {
 	return keys, nil
 }
 
-// FindX25519Key finds an X25519 key by label or ID.
-func (h *HSM) FindX25519Key(labelOrID string) (*Key, error) {
+// FindP256Key finds a P-256 key by label or ID.
+func (h *HSM) FindP256Key(labelOrID string) (*Key, error) {
 	if h.ctx == nil {
 		return nil, errors.New("HSM not opened")
 	}
 
-	// Encode the X25519 OID
-	ecParams, err := asn1.Marshal(oidX25519)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encode OID: %w", err)
-	}
-
-	// Try finding by label first
+	// Try finding by label first (don't filter by EC_PARAMS as some tokens don't support it)
 	template := []*pkcs11.Attribute{
 		pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_PRIVATE_KEY),
-		pkcs11.NewAttribute(pkcs11.CKA_KEY_TYPE, CKK_EC_MONTGOMERY),
-		pkcs11.NewAttribute(pkcs11.CKA_EC_PARAMS, ecParams),
+		pkcs11.NewAttribute(pkcs11.CKA_KEY_TYPE, pkcs11.CKK_EC),
 		pkcs11.NewAttribute(pkcs11.CKA_LABEL, labelOrID),
 	}
 
@@ -226,8 +253,7 @@ func (h *HSM) FindX25519Key(labelOrID string) (*Key, error) {
 	// Try finding by ID
 	template = []*pkcs11.Attribute{
 		pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_PRIVATE_KEY),
-		pkcs11.NewAttribute(pkcs11.CKA_KEY_TYPE, CKK_EC_MONTGOMERY),
-		pkcs11.NewAttribute(pkcs11.CKA_EC_PARAMS, ecParams),
+		pkcs11.NewAttribute(pkcs11.CKA_KEY_TYPE, pkcs11.CKK_EC),
 		pkcs11.NewAttribute(pkcs11.CKA_ID, []byte(labelOrID)),
 	}
 
@@ -284,24 +310,20 @@ func (h *HSM) getKeyInfo(privHandle pkcs11.ObjectHandle) (Key, error) {
 	return key, nil
 }
 
-// getPublicKey finds and returns the raw X25519 public key bytes.
+// getPublicKey finds and returns the P-256 public key bytes.
 func (h *HSM) getPublicKey(id []byte, label string) ([]byte, error) {
-	ecParams, _ := asn1.Marshal(oidX25519)
-
-	// Try to find by ID first
+	// Try to find by ID first (don't filter by EC_PARAMS as some tokens don't support it)
 	var template []*pkcs11.Attribute
 	if len(id) > 0 {
 		template = []*pkcs11.Attribute{
 			pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_PUBLIC_KEY),
-			pkcs11.NewAttribute(pkcs11.CKA_KEY_TYPE, CKK_EC_MONTGOMERY),
-			pkcs11.NewAttribute(pkcs11.CKA_EC_PARAMS, ecParams),
+			pkcs11.NewAttribute(pkcs11.CKA_KEY_TYPE, pkcs11.CKK_EC),
 			pkcs11.NewAttribute(pkcs11.CKA_ID, id),
 		}
 	} else {
 		template = []*pkcs11.Attribute{
 			pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_PUBLIC_KEY),
-			pkcs11.NewAttribute(pkcs11.CKA_KEY_TYPE, CKK_EC_MONTGOMERY),
-			pkcs11.NewAttribute(pkcs11.CKA_EC_PARAMS, ecParams),
+			pkcs11.NewAttribute(pkcs11.CKA_KEY_TYPE, pkcs11.CKK_EC),
 			pkcs11.NewAttribute(pkcs11.CKA_LABEL, label),
 		}
 	}
@@ -339,34 +361,37 @@ func (h *HSM) getPublicKey(id []byte, label string) ([]byte, error) {
 	return parseECPoint(ecPoint)
 }
 
-// parseECPoint extracts the raw 32-byte X25519 public key from EC_POINT.
+// parseECPoint extracts the 65-byte uncompressed P-256 public key from EC_POINT.
 func parseECPoint(ecPoint []byte) ([]byte, error) {
-	// The EC_POINT for X25519 is an OCTET STRING containing the 32-byte u-coordinate
-	// It may be wrapped in ASN.1 OCTET STRING encoding: 04 20 <32 bytes>
-	if len(ecPoint) == 32 {
+	// P-256 uncompressed point is 65 bytes: 04 || X (32 bytes) || Y (32 bytes)
+	// It may be wrapped in ASN.1 OCTET STRING encoding
+	if len(ecPoint) == 65 && ecPoint[0] == 0x04 {
 		return ecPoint, nil
 	}
 
-	if len(ecPoint) == 34 && ecPoint[0] == 0x04 && ecPoint[1] == 0x20 {
-		return ecPoint[2:], nil
+	// Try ASN.1 decoding (OCTET STRING wrapping)
+	var rawPoint []byte
+	if _, err := asn1.Unmarshal(ecPoint, &rawPoint); err == nil {
+		if len(rawPoint) == 65 && rawPoint[0] == 0x04 {
+			return rawPoint, nil
+		}
 	}
 
-	// Try ASN.1 decoding
-	var rawPoint []byte
-	if _, err := asn1.Unmarshal(ecPoint, &rawPoint); err == nil && len(rawPoint) == 32 {
-		return rawPoint, nil
+	// Some implementations return just the ASN.1 wrapped point
+	if len(ecPoint) == 67 && ecPoint[0] == 0x04 && ecPoint[1] == 0x41 {
+		return ecPoint[2:], nil
 	}
 
 	return nil, fmt.Errorf("unexpected EC_POINT format: length %d", len(ecPoint))
 }
 
-// GenerateX25519Key generates a new X25519 key pair on the HSM.
-func (h *HSM) GenerateX25519Key(label string, id []byte) (*Key, error) {
+// GenerateP256Key generates a new P-256 EC key pair on the HSM.
+func (h *HSM) GenerateP256Key(label string, id []byte) (*Key, error) {
 	if h.ctx == nil {
 		return nil, errors.New("HSM not opened")
 	}
 
-	ecParams, err := asn1.Marshal(oidX25519)
+	ecParams, err := asn1.Marshal(oidP256)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode OID: %w", err)
 	}
@@ -393,7 +418,7 @@ func (h *HSM) GenerateX25519Key(label string, id []byte) (*Key, error) {
 	}
 
 	mech := []*pkcs11.Mechanism{
-		pkcs11.NewMechanism(CKM_EC_MONTGOMERY_KEY_PAIR_GEN, nil),
+		pkcs11.NewMechanism(pkcs11.CKM_EC_KEY_PAIR_GEN, nil),
 	}
 
 	pubHandle, privHandle, err := h.ctx.GenerateKeyPair(h.session, mech, pubTemplate, privTemplate)
@@ -411,18 +436,18 @@ func (h *HSM) GenerateX25519Key(label string, id []byte) (*Key, error) {
 	return &key, nil
 }
 
-// DeriveSharedSecret performs X25519 ECDH with the HSM's private key and the given public key.
+// DeriveSharedSecret performs P-256 ECDH with the HSM's private key and the given public key.
 func (h *HSM) DeriveSharedSecret(privHandle pkcs11.ObjectHandle, peerPublicKey []byte) ([]byte, error) {
 	if h.ctx == nil {
 		return nil, errors.New("HSM not opened")
 	}
 
-	if len(peerPublicKey) != 32 {
-		return nil, fmt.Errorf("invalid peer public key length: %d (expected 32)", len(peerPublicKey))
+	if len(peerPublicKey) != 65 {
+		return nil, fmt.Errorf("invalid peer public key length: %d (expected 65)", len(peerPublicKey))
 	}
 
 	// The peer public key needs to be in the format expected by CKM_ECDH1_DERIVE
-	// For X25519, this is just the raw 32-byte u-coordinate
+	// For P-256, this is the 65-byte uncompressed point (04 || X || Y)
 	params := pkcs11.NewECDH1DeriveParams(pkcs11.CKD_NULL, nil, peerPublicKey)
 
 	mech := []*pkcs11.Mechanism{

@@ -9,18 +9,18 @@ import (
 	"github.com/pinpox/age-plugin-picohsm/internal/hsm"
 )
 
-// Identity implements age.Identity for Pico HSM X25519 keys.
+// Identity implements age.Identity for Pico HSM P-256 keys.
 // Decryption requires the HSM to perform the ECDH operation.
 type Identity struct {
 	HSM       *hsm.HSM
 	Key       *hsm.Key
-	PublicKey []byte // 32-byte X25519 public key (for matching stanzas)
+	PublicKey []byte // 65-byte uncompressed P-256 public key (for matching stanzas)
 }
 
 // NewIdentity creates a new Identity from an HSM key.
 func NewIdentity(h *hsm.HSM, key *hsm.Key) (*Identity, error) {
-	if len(key.PublicKey) != 32 {
-		return nil, fmt.Errorf("invalid public key length: %d (expected 32)", len(key.PublicKey))
+	if len(key.PublicKey) != 65 {
+		return nil, fmt.Errorf("invalid public key length: %d (expected 65)", len(key.PublicKey))
 	}
 	return &Identity{
 		HSM:       h,
@@ -59,7 +59,7 @@ func (i *Identity) unwrapStanza(stanza *age.Stanza) ([]byte, error) {
 		return nil, fmt.Errorf("failed to decode ephemeral public key: %w", err)
 	}
 
-	if len(ephemeralPublic) != 32 {
+	if len(ephemeralPublic) != 65 {
 		return nil, fmt.Errorf("invalid ephemeral public key length: %d", len(ephemeralPublic))
 	}
 
@@ -71,11 +71,11 @@ func (i *Identity) unwrapStanza(stanza *age.Stanza) ([]byte, error) {
 
 	// Derive unwrap key using HKDF
 	// Salt = ephemeral_public || recipient_public (our public key)
-	salt := make([]byte, 64)
-	copy(salt[:32], ephemeralPublic)
-	copy(salt[32:], i.PublicKey)
+	salt := make([]byte, 130)
+	copy(salt[:65], ephemeralPublic)
+	copy(salt[65:], i.PublicKey)
 
-	unwrapKey, err := hkdfSHA256(sharedSecret, salt, []byte(x25519Label), 32)
+	unwrapKey, err := hkdfSHA256(sharedSecret, salt, []byte(p256Label), 32)
 	if err != nil {
 		return nil, fmt.Errorf("failed to derive unwrap key: %w", err)
 	}

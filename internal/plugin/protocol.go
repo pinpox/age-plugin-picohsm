@@ -21,8 +21,9 @@ type Stanza struct {
 
 // Protocol handles the age plugin protocol communication.
 type Protocol struct {
-	in  *bufio.Reader
-	out io.Writer
+	in          *bufio.Reader
+	out         io.Writer
+	pendingLine string // line read but not consumed (for lookahead)
 }
 
 // NewProtocol creates a new Protocol for plugin communication.
@@ -33,14 +34,27 @@ func NewProtocol(in io.Reader, out io.Writer) *Protocol {
 	}
 }
 
+// readLine reads the next line, using pending line if available.
+func (p *Protocol) readLine() (string, error) {
+	if p.pendingLine != "" {
+		line := p.pendingLine
+		p.pendingLine = ""
+		return line, nil
+	}
+	line, err := p.in.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(line, "\n"), nil
+}
+
 // ReadStanza reads a stanza from the input.
 func (p *Protocol) ReadStanza() (*Stanza, error) {
 	// Read the header line: -> type [args...]
-	line, err := p.in.ReadString('\n')
+	line, err := p.readLine()
 	if err != nil {
 		return nil, err
 	}
-	line = strings.TrimSuffix(line, "\n")
 
 	if !strings.HasPrefix(line, "-> ") {
 		return nil, fmt.Errorf("invalid stanza header: %q", line)
@@ -59,23 +73,22 @@ func (p *Protocol) ReadStanza() (*Stanza, error) {
 	// Read body lines until we hit an empty line or another stanza
 	var bodyParts []string
 	for {
-		line, err := p.in.ReadString('\n')
+		line, err := p.readLine()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			return nil, err
 		}
-		line = strings.TrimSuffix(line, "\n")
 
-		// Empty line or next stanza header ends the body
-		if line == "" || strings.HasPrefix(line, "-> ") {
-			// If it's a new stanza, we need to "unread" it
-			if strings.HasPrefix(line, "-> ") {
-				// Put the line back by creating a new reader with the line prepended
-				// This is a simplified approach - in practice we'd buffer this
-				return nil, fmt.Errorf("unexpected stanza in body")
-			}
+		// Empty line ends the body
+		if line == "" {
+			break
+		}
+
+		// Next stanza header - save for next ReadStanza call
+		if strings.HasPrefix(line, "-> ") {
+			p.pendingLine = line
 			break
 		}
 
@@ -105,41 +118,48 @@ func (p *Protocol) WriteStanza(s *Stanza) error {
 		return err
 	}
 
-	// Write body if present
-	if len(s.Body) > 0 {
-		encoded := base64.RawStdEncoding.EncodeToString(s.Body)
-		// Split into 64-character lines
-		for len(encoded) > 64 {
-			if _, err := fmt.Fprintln(p.out, encoded[:64]); err != nil {
-				return err
-			}
-			encoded = encoded[64:]
+	// Write body - age protocol requires a short final line (< 64 chars)
+	encoded := base64.RawStdEncoding.EncodeToString(s.Body)
+	// Split into 64-character lines
+	for len(encoded) >= 64 {
+		if _, err := fmt.Fprintln(p.out, encoded[:64]); err != nil {
+			return err
 		}
-		if len(encoded) > 0 {
-			if _, err := fmt.Fprintln(p.out, encoded); err != nil {
-				return err
-			}
-		}
+		encoded = encoded[64:]
+	}
+	// Write the final short line (may be empty if body was multiple of 48 bytes)
+	if _, err := fmt.Fprintln(p.out, encoded); err != nil {
+		return err
 	}
 
 	return nil
 }
 
-// WriteDone writes the done command.
+// WriteDone writes the done command (no body, just header).
 func (p *Protocol) WriteDone() error {
-	_, err := fmt.Fprintln(p.out, "-> done")
+	// Commands without bodies still need a short (empty) body line
+	if _, err := fmt.Fprintln(p.out, "-> done"); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintln(p.out)
 	return err
 }
 
-// WriteOK writes an ok response.
+// WriteOK writes an ok response (no body, just header).
 func (p *Protocol) WriteOK() error {
-	_, err := fmt.Fprintln(p.out, "-> ok")
+	if _, err := fmt.Fprintln(p.out, "-> ok"); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintln(p.out)
 	return err
 }
 
-// WriteFail writes a fail response.
+// WriteFail writes a fail response (no body, just header).
 func (p *Protocol) WriteFail() error {
-	_, err := fmt.Fprintln(p.out, "-> fail")
+	if _, err := fmt.Fprintln(p.out, "-> fail"); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintln(p.out)
 	return err
 }
 
