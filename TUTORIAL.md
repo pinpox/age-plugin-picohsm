@@ -44,7 +44,8 @@ key files, you can restore keys to any compatible HSM.
 
 ### Software Required
 
-Install the following packages:
+- **age-plugin-picohsm** (this plugin) - install from releases or build from source
+- **sc-hsm-tool** - included with OpenSC (handles initialization, DKEK, key backup)
 
 ```bash
 # Debian/Ubuntu
@@ -57,11 +58,7 @@ sudo dnf install opensc pcsc-lite age
 nix-shell -p opensc pcsclite age
 ```
 
-Additionally, you need:
-- **age-plugin-picohsm** (this plugin) - install from releases or build from source
-- **sc-hsm-tool** - included with OpenSC (handles initialization, DKEK, key backup)
-
-### Environment Variables
+### Environment preparation
 
 Throughout this tutorial, set your PIN as an environment variable:
 
@@ -77,15 +74,26 @@ Find your PKCS#11 module path:
 # - /usr/lib/x86_64-linux-gnu/opensc-pkcs11.so
 # - /usr/lib/pkcs11/opensc-pkcs11.so
 
+# On NixOS it is included in the opensc package:
+# /nix/store/4xhm9vj9fjgjxlmpfv0yxrihd1bfwz1v-opensc-0.26.1/lib/opensc-pkcs11.so
+
 export PICOHSM_PKCS11_MODULE="/usr/lib/opensc-pkcs11.so"
+```
+
+Now ensure that pcscd is running. How you do this might depend on your
+distribution. On NixOS you can add this to your configuration and rebuild: 
+
+```nix
+services.pcscd.enable = true;
 ```
 
 ---
 
 ## 2. DKEK Setup
 
-**CRITICAL**: Create your DKEK share BEFORE initializing your first HSM. Without
-DKEK, keys cannot be backed up or transferred to other devices.
+> [!WARNING]
+> Create your DKEK share BEFORE initializing your first HSM. Without DKEK, keys
+> cannot be backed up or transferred to other devices.
 
 DKEK (Device Key Encryption Key) is a master key used to encrypt key exports.
 When you export a key from an HSM, it's wrapped (encrypted) with the DKEK. Only
@@ -110,25 +118,29 @@ it - you'll need it whenever you import this DKEK share into an HSM.
 Plug in your flashed Pico HSM. Verify it's detected:
 
 ```bash
-# List smart card readers
-pcsc_scan
+# List smart card readers (opensc)
 
-# Or check with OpenSC
 pkcs11-tool --module $PICOHSM_PKCS11_MODULE --list-slots
 ```
 
-Initialize the Device: 
+Create a super pin and write it down. You will need this pin to reset the user
+pin on too many failed attempts:
+
+```
+export SO_PIN=$(openssl rand -hex 8)
+echo $SO_PIN
+```
+
+Initialize the Device:
 
 ```bash
-sc-hsm-tool --initialize --so-pin 3537363231383830 --pin $YOUR_PIN
+sc-hsm-tool --initialize --so-pin $SO_PIN --pin $YOUR_PIN --dkek-shares 1
 ```
 
 Options:
 - `--so-pin` - Security Officer PIN (hex string, used for administrative tasks like PIN reset)
 - `--pin` - Your user PIN for daily use
-- `--dkek-shares 1` - Optional: specify number of DKEK shares (default: 1)
-
-**Note**: The SO-PIN shown (`3537363231383830`) is a common default and only meant as example.
+- `--dkek-shares 1` - **Required** for backup/restore functionality
 
 Immediately after initialization, import your DKEK share:
 
@@ -136,20 +148,22 @@ Immediately after initialization, import your DKEK share:
 sc-hsm-tool --import-dkek-share dkek.pbe
 ```
 
-Enter the password you chose when creating the DKEK share, then verify DKEK
-import:
+Enter the password you chose when creating the DKEK share. Success is indicated
+by no error message.
 
-```bash
-sc-hsm-tool --print-dkek-share
-```
+To verify everythin is setup correctly run ` pkcs15-tool -D`. it should show:
 
-This confirms the DKEK was imported successfully.
+- UserPIN configured (3 tries left)
+- SOPIN configured (15 tries left)
+- No keys yet (expected at this stage)
 
 ---
 
 ## 4. Generate Keys on HSM
 
-We'll create two separate keys:
+We will now create two separate keys. These are created on the HSM itself and
+will never leave it in a plaintext form.
+
 1. **age-key** - for age encryption/decryption
 2. **ssh-key** - for SSH authentication
 
@@ -189,6 +203,9 @@ chmod 600 ~/.age-identity.txt
 pkcs11-tool --module $PICOHSM_PKCS11_MODULE --login --pin $YOUR_PIN \
   --keypairgen --key-type EC:prime256v1 --label ssh-key --id 02
 ```
+
+The private key is stored on the HSM, no file will be craeted. To get the public
+key you can use `ssh-keygen -D $PICOHSM_PKCS11_MODULE`
 
 ### Verify Keys
 
@@ -269,9 +286,13 @@ age-plugin-picohsm --list
 
 ### Encrypt a File
 
-Use the recipient string from `--list` or `--generate`:
+Make sure the plugin is in `$PATH`. If you did not install it (yet), you can set
+this temporarily: `export PATH="$PWD/result/bin:$PATH"`
+
+Then use the recipient string from `--list` or `--generate`:
 
 ```bash
+
 # Encrypt to HSM recipient
 echo "secret message" | age -r age1picohsm1qv5te... -o secret.age
 
@@ -376,7 +397,7 @@ Having multiple HSMs with identical keys provides redundancy - if one fails, you
 Connect the new HSM (disconnect the first one to avoid confusion):
 
 ```bash
-sc-hsm-tool --initialize --so-pin 3537363231383830 --pin $YOUR_PIN
+sc-hsm-tool --initialize --so-pin $SO_PIN --pin $YOUR_PIN --dkek-shares 1
 ```
 
 ### Import Same DKEK Share
@@ -426,7 +447,7 @@ You need:
 # See: https://github.com/polhenarejos/pico-hsm
 
 # 2. Initialize the new HSM
-sc-hsm-tool --initialize --so-pin 3537363231383830 --pin $YOUR_PIN
+sc-hsm-tool --initialize --so-pin $SO_PIN --pin $YOUR_PIN --dkek-shares 1
 
 # 3. Import your DKEK share
 sc-hsm-tool --import-dkek-share dkek.pbe

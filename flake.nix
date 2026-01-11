@@ -24,15 +24,6 @@
             license = licenses.mit;
           };
         };
-
-        devShells.default = pkgs.mkShell {
-          buildInputs = with pkgs; [ go gopls opensc pcsclite ];
-        };
-
-        apps.default = {
-          type = "app";
-          program = "${self.packages.${system}.default}/bin/age-plugin-picohsm";
-        };
       }
     );
 }
