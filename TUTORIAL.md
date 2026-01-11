@@ -569,7 +569,9 @@ If `--key-reference` numbers don't match, use `pkcs15-tool -D` to find the corre
 
 ### Permission Errors
 
-Your user might need to be member of the `plugdev` group
+If you see "No HSM found" while trying to use the HSM and `systemctl status
+pcscd` shows permission errors, your user might need to be member of the
+`plugdev` group.
 
 ---
 
