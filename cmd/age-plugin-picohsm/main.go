@@ -16,9 +16,29 @@ import (
 	"filippo.io/age"
 	"github.com/pinpox/age-plugin-picohsm/internal/hsm"
 	ageplugin "github.com/pinpox/age-plugin-picohsm/internal/plugin"
+	"golang.org/x/term"
 )
 
 const version = "0.1.0"
+
+// readPIN reads a PIN from the terminal without echoing it.
+func readPIN(prompt string) (string, error) {
+	// Open /dev/tty directly to ensure we read from the terminal
+	// even if stdin is redirected
+	tty, err := os.Open("/dev/tty")
+	if err != nil {
+		return "", fmt.Errorf("failed to open terminal: %w", err)
+	}
+	defer tty.Close()
+
+	fmt.Print(prompt)
+	pinBytes, err := term.ReadPassword(int(tty.Fd()))
+	fmt.Println() // newline after hidden input
+	if err != nil {
+		return "", err
+	}
+	return string(pinBytes), nil
+}
 
 func main() {
 	// Check if we're being invoked as an age plugin
@@ -69,7 +89,7 @@ func main() {
 
 	if *generateFlag {
 		if *labelFlag == "" {
-			fmt.Fprintf(os.Stderr, "Error: --label is required with --generate\n")
+			fmt.Fprintf(os.Stderr, "Error: --label is required with --generate")
 			os.Exit(1)
 		}
 		if err := generateKey(*moduleFlag, *pinFlag, *labelFlag); err != nil {
@@ -81,12 +101,12 @@ func main() {
 
 	// No command specified, print usage
 	fmt.Fprintf(os.Stderr, "Usage: %s [options]\n\n", os.Args[0])
-	fmt.Fprintf(os.Stderr, "Options:\n")
+	fmt.Fprintf(os.Stderr, "Options:")
 	flag.PrintDefaults()
-	fmt.Fprintf(os.Stderr, "\nExamples:\n")
+	fmt.Fprintf(os.Stderr, "\nExamples:")
 	fmt.Fprintf(os.Stderr, "  %s --generate --label my-key    Generate a new key\n", os.Args[0])
 	fmt.Fprintf(os.Stderr, "  %s --list                       List keys on HSM\n", os.Args[0])
-	fmt.Fprintf(os.Stderr, "\nThis binary is also invoked by age as a plugin.\n")
+	fmt.Fprintf(os.Stderr, "\nThis binary is also invoked by age as a plugin.")
 }
 
 // runPlugin runs the age plugin protocol.
@@ -193,6 +213,7 @@ phase2:
 func runIdentityV1(proto *ageplugin.Protocol) error {
 	var identities []*ageplugin.IdentityData
 	fileStanzas := make(map[int][]*age.Stanza) // file index -> stanzas
+	var requiredFingerprints []string          // fingerprints we need keys for
 
 	// Phase 1: Read commands from client
 	for {
@@ -233,6 +254,22 @@ func runIdentityV1(proto *ageplugin.Protocol) error {
 			}
 			fileStanzas[fileIdx] = append(fileStanzas[fileIdx], ageStanza)
 
+			// Extract fingerprint for error messages
+			if fp := ageplugin.ExtractFingerprintFromStanza(ageStanza); fp != nil {
+				fpStr := ageplugin.FormatFingerprint(fp)
+				// Deduplicate
+				found := false
+				for _, existing := range requiredFingerprints {
+					if existing == fpStr {
+						found = true
+						break
+					}
+				}
+				if !found {
+					requiredFingerprints = append(requiredFingerprints, fpStr)
+				}
+			}
+
 		case "done":
 			goto phase2
 
@@ -247,10 +284,18 @@ phase2:
 		return proto.WriteDone()
 	}
 
+	// Build description of required keys for error messages
+	var keyHint string
+	if len(requiredFingerprints) > 0 {
+		keyHint = fmt.Sprintf("key with fingerprint %s", strings.Join(requiredFingerprints, " or "))
+	} else {
+		keyHint = "the required key"
+	}
+
 	// Initialize HSM
 	h := hsm.New()
 	if err := h.Open(""); err != nil {
-		proto.WriteInternalError(fmt.Sprintf("failed to open HSM: %v", err))
+		proto.WriteInternalError(fmt.Sprintf("Please plug in HSM with %s (failed to open HSM: %v)", keyHint, err))
 		return proto.WriteDone()
 	}
 	defer h.Close()
@@ -321,7 +366,8 @@ phase2:
 		}
 
 		if !unwrapped {
-			// No identity could unwrap - this is OK, just don't send a file-key
+			// No identity could unwrap - this is normal, age will try other identities
+			// The fingerprint info is already in the stanza for matching
 			continue
 		}
 	}
@@ -339,8 +385,8 @@ func generateKey(modulePath, pin, label string) error {
 
 	// Get PIN if not provided
 	if pin == "" {
-		fmt.Print("Enter HSM PIN: ")
-		_, err := fmt.Scanln(&pin)
+		var err error
+		pin, err = readPIN("Enter HSM PIN: ")
 		if err != nil {
 			return fmt.Errorf("failed to read PIN: %w", err)
 		}
@@ -380,12 +426,16 @@ func generateKey(modulePath, pin, label string) error {
 		return fmt.Errorf("failed to encode identity: %w", err)
 	}
 
+	fingerprint := ageplugin.Fingerprint(key.PublicKey)
+
 	fmt.Println()
 	fmt.Println("Public key (recipient):")
 	fmt.Printf("  %s\n", recipient)
 	fmt.Println()
 	fmt.Println("Secret key (identity):")
 	fmt.Printf("  %s\n", identity)
+	fmt.Println()
+	fmt.Printf("Fingerprint: %s\n", ageplugin.FormatFingerprint(fingerprint))
 	fmt.Println()
 	fmt.Println("Save the identity to a file and use it with age -d -i <file>")
 
@@ -402,8 +452,8 @@ func listKeys(modulePath, pin string) error {
 
 	// Get PIN if not provided
 	if pin == "" {
-		fmt.Print("Enter HSM PIN: ")
-		_, err := fmt.Scanln(&pin)
+		var err error
+		pin, err = readPIN("Enter HSM PIN: ")
 		if err != nil {
 			return fmt.Errorf("failed to read PIN: %w", err)
 		}
@@ -452,8 +502,10 @@ func listKeys(modulePath, pin string) error {
 			continue
 		}
 
+		fingerprint := ageplugin.Fingerprint(key.PublicKey)
 		fmt.Printf("%d. Label: %s\n", i+1, key.Label)
 		fmt.Printf("   ID: %x\n", key.ID)
+		fmt.Printf("   Fingerprint: %s\n", ageplugin.FormatFingerprint(fingerprint))
 		fmt.Printf("   Recipient: %s\n", recipient)
 		fmt.Printf("   Identity: %s\n", identity)
 		fmt.Println()
@@ -472,8 +524,8 @@ func convertIdentityToRecipient(identityStr, modulePath, pin string) error {
 
 	// Get PIN if not provided
 	if pin == "" {
-		fmt.Print("Enter HSM PIN: ")
-		_, err := fmt.Scanln(&pin)
+		var err error
+		pin, err = readPIN("Enter HSM PIN: ")
 		if err != nil {
 			return fmt.Errorf("failed to read PIN: %w", err)
 		}

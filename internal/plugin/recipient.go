@@ -89,10 +89,16 @@ func (r *Recipient) Wrap(fileKey []byte) ([]*age.Stanza, error) {
 		return nil, fmt.Errorf("failed to wrap file key: %w", err)
 	}
 
-	// Create stanza with ephemeral public key as argument
+	// Compute recipient fingerprint (first 8 bytes of SHA-256 of public key)
+	recipientFP := sha256.Sum256(r.PublicKey)
+
+	// Create stanza with ephemeral public key and recipient fingerprint as arguments
 	stanza := &age.Stanza{
 		Type: "picohsm",
-		Args: []string{base64.RawStdEncoding.EncodeToString(ephemeralPub)},
+		Args: []string{
+			base64.RawStdEncoding.EncodeToString(ephemeralPub),
+			base64.RawStdEncoding.EncodeToString(recipientFP[:8]),
+		},
 		Body: wrappedKey,
 	}
 

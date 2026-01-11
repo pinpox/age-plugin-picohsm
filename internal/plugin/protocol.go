@@ -48,6 +48,8 @@ func (p *Protocol) readLine() (string, error) {
 	return strings.TrimSuffix(line, "\n"), nil
 }
 
+const bytesPerLine = 48 // age protocol: 48 bytes = 64 base64 chars per line
+
 // ReadStanza reads a stanza from the input.
 func (p *Protocol) ReadStanza() (*Stanza, error) {
 	// Read the header line: -> type [args...]
@@ -70,8 +72,7 @@ func (p *Protocol) ReadStanza() (*Stanza, error) {
 		Args: parts[1:],
 	}
 
-	// Read body lines until we hit an empty line, another stanza, or a short final line
-	var bodyParts []string
+	// Read body lines - a stanza body always ends with a short line (< 48 decoded bytes)
 	for {
 		line, err := p.readLine()
 		if err == io.EOF {
@@ -81,32 +82,18 @@ func (p *Protocol) ReadStanza() (*Stanza, error) {
 			return nil, err
 		}
 
-		// Empty line ends the body
-		if line == "" {
-			break
-		}
-
-		// Next stanza header - save for next ReadStanza call
-		if strings.HasPrefix(line, "-> ") {
-			p.pendingLine = line
-			break
-		}
-
-		bodyParts = append(bodyParts, line)
-
-		// A short line (< 64 chars) is the final body line per age protocol
-		if len(line) < 64 {
-			break
-		}
-	}
-
-	if len(bodyParts) > 0 {
-		bodyB64 := strings.Join(bodyParts, "")
-		body, err := base64.RawStdEncoding.DecodeString(bodyB64)
+		// Decode the line
+		decoded, err := base64.RawStdEncoding.DecodeString(line)
 		if err != nil {
-			return nil, fmt.Errorf("failed to decode body: %w", err)
+			return nil, fmt.Errorf("failed to decode body line: %w", err)
 		}
-		s.Body = body
+
+		s.Body = append(s.Body, decoded...)
+
+		// A short line (< 48 bytes decoded) ends the stanza
+		if len(decoded) < bytesPerLine {
+			break
+		}
 	}
 
 	return s, nil
@@ -119,21 +106,26 @@ func (p *Protocol) WriteStanza(s *Stanza) error {
 	for _, arg := range s.Args {
 		line += " " + arg
 	}
-	if _, err := fmt.Fprintln(p.out, line); err != nil {
-		return err
-	}
+
+	// Build complete stanza as a single write to avoid buffering issues
+	var buf strings.Builder
+	buf.WriteString(line)
+	buf.WriteString("\n")
 
 	// Write body - age protocol requires a short final line (< 64 chars)
 	encoded := base64.RawStdEncoding.EncodeToString(s.Body)
 	// Split into 64-character lines
 	for len(encoded) >= 64 {
-		if _, err := fmt.Fprintln(p.out, encoded[:64]); err != nil {
-			return err
-		}
+		buf.WriteString(encoded[:64])
+		buf.WriteString("\n")
 		encoded = encoded[64:]
 	}
 	// Write the final short line (may be empty if body was multiple of 48 bytes)
-	if _, err := fmt.Fprintln(p.out, encoded); err != nil {
+	buf.WriteString(encoded)
+	buf.WriteString("\n")
+
+	// Write entire stanza at once
+	if _, err := io.WriteString(p.out, buf.String()); err != nil {
 		return err
 	}
 

@@ -15,7 +15,7 @@
           pname = "age-plugin-picohsm";
           version = "0.1.0";
           src = ./.;
-          vendorHash = "sha256-3TN8dgzkq1MU20IlEt+BrXoNWo6v0L9Ns0zRZl848LA=";
+          vendorHash = "sha256-khGb9VtM0KXgOwBRNkV68/mgLlUem0B6qjhun8MRVq8=";
           subPackages = [ "cmd/age-plugin-picohsm" ];
 
           meta = with pkgs.lib; {
