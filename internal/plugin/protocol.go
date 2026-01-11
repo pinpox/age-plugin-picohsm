@@ -132,6 +132,11 @@ func (p *Protocol) WriteStanza(s *Stanza) error {
 		return err
 	}
 
+	// Flush output to ensure age receives the stanza immediately
+	if f, ok := p.out.(interface{ Sync() error }); ok {
+		_ = f.Sync()
+	}
+
 	return nil
 }
 

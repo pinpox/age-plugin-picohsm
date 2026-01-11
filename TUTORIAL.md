@@ -278,6 +278,12 @@ export PICOHSM_PKCS11_MODULE="/usr/lib/opensc-pkcs11.so"
 export PICOHSM_PIN=$YOUR_PIN
 ```
 
+> [!NOTE]
+> Setting `PICOHSM_PIN` is recommended for SSH sessions and scripts. Without it,
+> the plugin prompts for the PIN via age's protocol, which requires a TTY. If
+> decryption hangs with "waiting on picohsm plugin...", set the PIN environment
+> variable or use `ssh -t` for an interactive session.
+
 ### List Keys
 
 ```bash
