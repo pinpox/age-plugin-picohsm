@@ -1,13 +1,5 @@
 # Pico HSM Tutorial: age Encryption and SSH Authentication
 
-This tutorial covers setting up Pico HSM for:
-- **age encryption** via age-plugin-picohsm
-- **SSH authentication** via PKCS#11
-- **Multi-device redundancy** via DKEK key transfer
-- **Backup and recovery** to new HSMs
-
-## Table of Contents
-
 1. [Introduction & Prerequisites](#1-introduction--prerequisites)
 2. [DKEK Setup (Do This First!)](#2-dkek-setup-do-this-first)
 3. [First Pico HSM Initialization](#3-first-pico-hsm-initialization)
@@ -31,13 +23,24 @@ You will set up a Pico HSM to securely store cryptographic keys that:
 - Can be backed up and transferred to other HSMs via encrypted export
 - Work with age encryption and SSH authentication
 
+This tutorial covers setting up Pico HSM for:
+- **age encryption** via age-plugin-picohsm
+- **SSH authentication** via PKCS#11
+- **Multi-device redundancy** via DKEK key transfer
+- **Backup and recovery** to new HSMs
+
 ### Security Model
 
-Keys are generated directly on the HSM and cannot be extracted as plaintext. Backup and transfer between HSMs is possible through DKEK (Device Key Encryption Key) - a master key that encrypts key exports. With your DKEK share and wrapped key files, you can restore keys to any compatible HSM.
+Keys are generated directly on the HSM and cannot be extracted as plaintext.
+Backup and transfer between HSMs is possible through DKEK (Device Key Encryption
+Key) - a master key that encrypts key exports. With your DKEK share and wrapped
+key files, you can restore keys to any compatible HSM.
 
 ### Hardware Required
 
-- 1 or more Raspberry Pi Pico devices flashed with [pico-hsm firmware](https://github.com/polhenarejos/pico-hsm)
+- One or more Raspberry Pi Pico devices flashed with [pico-hsm
+  firmware](https://github.com/polhenarejos/pico-hsm). You will need to set the
+  VID:PID to a know value as shown in the pico-hsm docs.
 
 ### Software Required
 
@@ -79,34 +82,30 @@ export PICOHSM_PKCS11_MODULE="/usr/lib/opensc-pkcs11.so"
 
 ---
 
-## 2. DKEK Setup (Do This First!)
+## 2. DKEK Setup
 
-**CRITICAL**: Create your DKEK share BEFORE initializing your first HSM. Without DKEK, keys cannot be backed up or transferred to other devices.
+**CRITICAL**: Create your DKEK share BEFORE initializing your first HSM. Without
+DKEK, keys cannot be backed up or transferred to other devices.
 
-### What is DKEK?
-
-DKEK (Device Key Encryption Key) is a master key used to encrypt key exports. When you export a key from an HSM, it's wrapped (encrypted) with the DKEK. Only HSMs that have imported the same DKEK share can unwrap and use these keys.
+DKEK (Device Key Encryption Key) is a master key used to encrypt key exports.
+When you export a key from an HSM, it's wrapped (encrypted) with the DKEK. Only
+HSMs that have imported the same DKEK share can unwrap and use these keys.
 
 ### Create DKEK Share
+
+- **Store `dkek.pbe` securely** - this file plus its password can decrypt your key backups
+- **The password is essential** - without it, the DKEK share is useless
 
 ```bash
 sc-hsm-tool --create-dkek-share dkek.pbe
 ```
 
-You will be prompted to enter a password. Choose a strong password and remember it - you'll need it whenever you import this DKEK share into an HSM.
-
-### Security Warnings
-
-- **Store `dkek.pbe` securely** - this file plus its password can decrypt your key backups
-- **Never lose both** the DKEK share and all HSMs with your keys
-- **Consider multiple copies** in different secure locations (safety deposit box, encrypted cloud storage, etc.)
-- **The password is essential** - without it, the DKEK share is useless
+You will be prompted to enter a password. Choose a strong password and remember
+it - you'll need it whenever you import this DKEK share into an HSM.
 
 ---
 
 ## 3. First Pico HSM Initialization
-
-### Connect Your Pico HSM
 
 Plug in your flashed Pico HSM. Verify it's detected:
 
@@ -118,7 +117,7 @@ pcsc_scan
 pkcs11-tool --module $PICOHSM_PKCS11_MODULE --list-slots
 ```
 
-### Initialize the Device
+Initialize the Device: 
 
 ```bash
 sc-hsm-tool --initialize --so-pin 3537363231383830 --pin $YOUR_PIN
@@ -129,19 +128,16 @@ Options:
 - `--pin` - Your user PIN for daily use
 - `--dkek-shares 1` - Optional: specify number of DKEK shares (default: 1)
 
-**Note**: The SO-PIN shown (`3537363231383830`) is a common default. Choose your own for better security.
+**Note**: The SO-PIN shown (`3537363231383830`) is a common default and only meant as example.
 
-### Import DKEK Share
-
-**Do this immediately after initialization:**
+Immediately after initialization, import your DKEK share:
 
 ```bash
 sc-hsm-tool --import-dkek-share dkek.pbe
 ```
 
-Enter the password you chose when creating the DKEK share.
-
-### Verify DKEK Import
+Enter the password you chose when creating the DKEK share, then verify DKEK
+import:
 
 ```bash
 sc-hsm-tool --print-dkek-share
@@ -208,7 +204,7 @@ pkcs15-tool -D
 
 ---
 
-## 5. Backup Keys (Critical Step!)
+## 5. Backup Keys
 
 ### Find Key References
 
@@ -239,24 +235,20 @@ sc-hsm-tool --wrap-key age-key-backup.bin --key-reference 1 --pin $YOUR_PIN
 sc-hsm-tool --wrap-key ssh-key-backup.bin --key-reference 2 --pin $YOUR_PIN
 ```
 
-These `.bin` files contain your keys encrypted with the DKEK. They are useless without the DKEK share.
+These `.bin` files contain your keys encrypted with the DKEK. They are useless
+without the DKEK share.
 
 ### Files to Back Up
 
-| File | Purpose | Security |
-|------|---------|----------|
-| `dkek.pbe` | DKEK share (master key) | Store securely + remember password |
-| `age-key-backup.bin` | Encrypted age key | Safe to store alongside DKEK |
-| `ssh-key-backup.bin` | Encrypted SSH key | Safe to store alongside DKEK |
+| File                  | Purpose                   | Security                           |
+|-----------------------|---------------------------|------------------------------------|
+| `dkek.pbe`            | DKEK share (master key)   | Store securely + remember password |
+| `age-key-backup.bin`  | Encrypted age key         | Safe to store alongside DKEK       |
+| `ssh-key-backup.bin`  | Encrypted SSH key         | Safe to store alongside DKEK       |
 | `~/.age-identity.txt` | Identity reference string | Not secret, but convenient to keep |
 
-### Backup Storage Recommendations
-
-- **Primary**: Encrypted USB drive in a secure location
-- **Secondary**: Different physical location (safety deposit box)
-- **Optional**: Encrypted cloud storage (the files are already encrypted)
-
-**Remember**: Without BOTH `dkek.pbe` (+ password) AND the wrapped key files, recovery is impossible.
+**Remember**: Without BOTH `dkek.pbe` (+ password) AND the wrapped key files,
+recovery is impossible.
 
 ---
 
@@ -413,18 +405,12 @@ age-plugin-picohsm --list --pin $YOUR_PIN
 
 Both HSMs now have identical keys. You can use either one interchangeably.
 
-### Recommended Setup
-
-- **2-3 HSMs** with identical keys
-- **One on keychain** for daily use
-- **One at home** as backup
-- **One in secure offsite location** (optional)
-
 ---
 
 ## 9. Recovery to New HSM (All HSMs Lost)
 
-If all your HSMs are lost, stolen, or destroyed, you can recover to a brand new device.
+If all your HSMs are lost, stolen, or destroyed, you can recover to a brand new
+device.
 
 ### Requirements
 
@@ -453,35 +439,15 @@ sc-hsm-tool --unwrap-key ssh-key-backup.bin --key-reference 2 --pin $YOUR_PIN
 age-plugin-picohsm --list --pin $YOUR_PIN
 ```
 
-Your new HSM now has the same keys as your old ones. All your encrypted files can be decrypted, and SSH servers will accept your key.
-
-### What If I Lost the Backup Files?
-
-**Without `dkek.pbe`**: Recovery is impossible. Keys cannot be exported from HSMs without DKEK.
-
-**Without wrapped key files** (but have DKEK): Recovery is impossible. The DKEK alone cannot recreate keys.
-
-**Lost both**: All data encrypted to those keys is permanently inaccessible. You'll need to generate new keys and re-encrypt your data (if you have unencrypted backups).
+Your new HSM now has the same keys as your old ones. All your encrypted files
+can be decrypted, and SSH servers will accept your key.
 
 ---
 
 ## 10. Bootstrapping a New Computer
 
-When setting up a new computer, you just need your Pico HSM - no key files to transfer.
-
-### Install Software
-
-```bash
-# Install required packages
-sudo apt install opensc pcscd age
-
-# Install age-plugin-picohsm
-# (download from releases or build from source)
-
-# Ensure pcscd is running
-sudo systemctl enable pcscd
-sudo systemctl start pcscd
-```
+When setting up a new computer, you just need your Pico HSM - no key files to
+transfer.
 
 ### Configure Environment
 
@@ -527,46 +493,20 @@ ssh-add -s $PICOHSM_PKCS11_MODULE
 ssh-add -L
 ```
 
-### Decrypt Bootstrap Secrets
-
-If you have encrypted configuration or secrets:
-
-```bash
-age -d -i ~/.age-identity.txt -o ~/.config/secrets.tar secrets.tar.age
-```
-
 ---
 
 ## 11. Backup Strategy Summary
 
 ### What to Back Up
 
-| Item | Purpose | Required For |
-|------|---------|--------------|
-| `dkek.pbe` + password | Master encryption key | Any recovery |
-| `age-key-backup.bin` | Your age key (encrypted) | age recovery |
-| `ssh-key-backup.bin` | Your SSH key (encrypted) | SSH recovery |
-| Recipient strings | Let others encrypt to you | Sharing with contacts |
-| Identity strings | Reference for decryption | Convenience |
+| Item                  | Purpose                   | Required For          |
+|-----------------------|---------------------------|-----------------------|
+| `dkek.pbe` + password | Master encryption key     | Any recovery          |
+| `age-key-backup.bin`  | Your age key (encrypted)  | age recovery          |
+| `ssh-key-backup.bin`  | Your SSH key (encrypted)  | SSH recovery          |
+| Recipient strings     | Let others encrypt to you | Sharing with contacts |
+| Identity strings      | Reference for decryption  | Convenience           |
 
-### Backup Locations
-
-| Location | What to Store | Purpose |
-|----------|---------------|---------|
-| Password manager | DKEK password, identity strings | Quick reference |
-| Encrypted USB (home) | All backup files | Primary backup |
-| Safety deposit box | All backup files, DKEK password | Disaster recovery |
-| Multiple HSMs | Live copies of keys | Daily redundancy |
-
-### Recovery Scenarios
-
-| Scenario | Solution |
-|----------|----------|
-| Lost one HSM | Use another HSM, or restore from backup |
-| Lost all HSMs | Buy new HSM, restore from `dkek.pbe` + `.bin` files |
-| New computer | Plug in any HSM, install software, configure |
-| Lost DKEK password | **Unrecoverable** - keep multiple copies of password |
-| Lost backup files | Export again from any working HSM |
 
 ### Security Principles
 
@@ -575,16 +515,6 @@ age -d -i ~/.age-identity.txt -o ~/.config/secrets.tar secrets.tar.age
 3. **Either alone is useless** - defense in depth
 4. **Multiple HSMs** provide operational redundancy
 5. **Geographic distribution** of backups protects against disasters
-
-### Recommended Practices
-
-- [ ] Create DKEK share before first HSM initialization
-- [ ] Export wrapped keys immediately after generation
-- [ ] Test recovery process with a spare HSM
-- [ ] Store backups in multiple physical locations
-- [ ] Document your DKEK password securely
-- [ ] Set up 2-3 HSMs with identical keys
-- [ ] Verify backups periodically
 
 ---
 
@@ -618,13 +548,7 @@ If `--key-reference` numbers don't match, use `pkcs15-tool -D` to find the corre
 
 ### Permission Errors
 
-```bash
-# Add user to required groups
-sudo usermod -aG plugdev $USER
-
-# Log out and back in, or:
-newgrp plugdev
-```
+Your user might need to be member of the `plugdev` group
 
 ---
 
