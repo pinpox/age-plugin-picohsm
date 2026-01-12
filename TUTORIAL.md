@@ -7,10 +7,8 @@
 5. [Backup Keys (Critical Step!)](#5-backup-keys-critical-step)
 6. [Using age-plugin-picohsm](#6-using-age-plugin-picohsm)
 7. [SSH with PKCS#11](#7-ssh-with-pkcs11)
-8. [Cloning to Additional HSMs](#8-cloning-to-additional-hsms)
-9. [Recovery to New HSM](#9-recovery-to-new-hsm-all-hsms-lost)
-10. [Bootstrapping a New Computer](#10-bootstrapping-a-new-computer)
-11. [Backup Strategy Summary](#11-backup-strategy-summary)
+8. [Cloning or Recovery to Another HSM](#8-cloning-or-recovery-to-another-hsm)
+9. [Backup Strategy Summary](#9-backup-strategy-summary)
 
 ---
 
@@ -363,15 +361,7 @@ Add this to `~/.ssh/authorized_keys` on servers you want to access.
 
 ### Configure SSH Client
 
-Option 1: Use ssh-agent (recommended):
-
-```bash
-# Add to ~/.bashrc or ~/.zshrc
-export SSH_AUTH_SOCK=$(gpgconf --list-dirs agent-ssh-socket)
-ssh-add -s $PICOHSM_PKCS11_MODULE
-```
-
-Option 2: Configure per-host in `~/.ssh/config`:
+Option 1: Configure per-host in `~/.ssh/config` (recommended):
 
 ```
 Host myserver
@@ -380,149 +370,91 @@ Host myserver
     PKCS11Provider /usr/lib/opensc-pkcs11.so
 ```
 
+Option 2: Use ssh-agent
+
+```bash
+# Add to ~/.bashrc or ~/.zshrc
+export SSH_AUTH_SOCK=$(gpgconf --list-dirs agent-ssh-socket)
+ssh-add -s $PICOHSM_PKCS11_MODULE
+```
+
 Option 3: Command line:
 
 ```bash
 ssh -I $PICOHSM_PKCS11_MODULE user@server
 ```
 
-### Remove HSM from Agent
+### (Optional) SSH User Certificates
+
+If your infrastructure uses SSH certificates, you can sign the HSM's public key
+with your CA:
 
 ```bash
-ssh-add -e $PICOHSM_PKCS11_MODULE
+# Extract the SSH public key from the HSM
+# The file contains both keys - extract just the "ssh-key". If you used a
+different name, adapt the grep accordingly
+ssh-keygen -D $PICOHSM_PKCS11_MODULE | grep "ssh-key" > hsm-keys.pub
+
+# Sign with your user CA (adjust principal and validity as needed)
+ssh-keygen -s /path/to/user_ca \
+  -I "$USER@picohsm" \
+  -n $USER,root \       # Valid for $USER and for root login
+  -V +52w \             # Valid 52 weeks (optional)
+  ssh-key.pub
+
+# This creates ssh-key-cert.pub - copy it to ~/.ssh/
+cp ssh-key-cert.pub ~/.ssh/id_ecdsa-cert.pub
 ```
+
+Configure SSH to use the certificate in `~/.ssh/config`:
+
+```
+Host *
+    PKCS11Provider /usr/lib/opensc-pkcs11.so
+    CertificateFile ~/.ssh/id_ecdsa-cert.pub
+```
+
+The certificate proves your identity to any server that trusts your CA, without
+needing to add individual public keys to `authorized_keys`.
 
 ---
 
-## 8. Cloning to Additional HSMs
+## 8. Cloning or Recovery to Another HSM
 
-Having multiple HSMs with identical keys provides redundancy - if one fails, you can immediately switch to another.
+This process is the same whether you're:
+- **Cloning** to an additional HSM for redundancy
+- **Recovering** to a new HSM after losing all devices
 
-### Initialize Second HSM
+You need your `dkek.pbe` file + password and the wrapped key backup files.
 
-Connect the new HSM (disconnect the first one to avoid confusion):
+### Steps
 
-```bash
-sc-hsm-tool --initialize --so-pin $SO_PIN --pin $YOUR_PIN --dkek-shares 1
-```
-
-### Import Same DKEK Share
+Connect the new HSM (disconnect others to avoid confusion):
 
 ```bash
-sc-hsm-tool --import-dkek-share dkek.pbe
-```
-
-Use the same password as before.
-
-### Import Keys from Backup
-
-```bash
-# Import age key
-sc-hsm-tool --unwrap-key age-key-backup.bin --key-reference 1 --pin $YOUR_PIN
-
-# Import SSH key
-sc-hsm-tool --unwrap-key ssh-key-backup.bin --key-reference 2 --pin $YOUR_PIN
-```
-
-### Verify
-
-```bash
-age-plugin-picohsm --list --pin $YOUR_PIN
-```
-
-Both HSMs now have identical keys. You can use either one interchangeably.
-
----
-
-## 9. Recovery to New HSM (All HSMs Lost)
-
-If all your HSMs are lost, stolen, or destroyed, you can recover to a brand new
-device.
-
-### Requirements
-
-You need:
-- `dkek.pbe` file + password
-- `age-key-backup.bin` and/or `ssh-key-backup.bin`
-- A new Pico HSM (or freshly flashed Pico)
-
-### Recovery Steps
-
-```bash
-# 1. Flash Pico with pico-hsm firmware (if not already a Pico HSM)
+# If using a fresh Pico, flash pico-hsm firmware first
 # See: https://github.com/polhenarejos/pico-hsm
 
-# 2. Initialize the new HSM
+# Initialize the HSM
 sc-hsm-tool --initialize --so-pin $SO_PIN --pin $YOUR_PIN --dkek-shares 1
 
-# 3. Import your DKEK share
+# Import your DKEK share (enter the password when prompted)
 sc-hsm-tool --import-dkek-share dkek.pbe
 
-# 4. Import your keys
+# Import your keys
 sc-hsm-tool --unwrap-key age-key-backup.bin --key-reference 1 --pin $YOUR_PIN
 sc-hsm-tool --unwrap-key ssh-key-backup.bin --key-reference 2 --pin $YOUR_PIN
 
-# 5. Verify
-age-plugin-picohsm --list --pin $YOUR_PIN
-```
-
-Your new HSM now has the same keys as your old ones. All your encrypted files
-can be decrypted, and SSH servers will accept your key.
-
----
-
-## 10. Bootstrapping a New Computer
-
-When setting up a new computer, you just need your Pico HSM - no key files to
-transfer.
-
-### Configure Environment
-
-Add to `~/.bashrc` or `~/.zshrc`:
-
-```bash
-export PICOHSM_PKCS11_MODULE="/usr/lib/opensc-pkcs11.so"
-export PICOHSM_PIN="$YOUR_PIN"  # Or omit to be prompted
-```
-
-### Connect HSM and Verify
-
-```bash
-# Plug in your Pico HSM
-
-# Verify detection
-pkcs11-tool --module $PICOHSM_PKCS11_MODULE --list-slots
-
-# List keys
-age-plugin-picohsm --list --pin $YOUR_PIN
-```
-
-### Set Up age Identity
-
-Create your identity file:
-
-```bash
-# Get your identity string
-age-plugin-picohsm --list --pin $YOUR_PIN
-
-# Save to file
-echo "AGE-PLUGIN-PICOHSM-1..." > ~/.age-identity.txt
-chmod 600 ~/.age-identity.txt
-```
-
-### Set Up SSH
-
-```bash
-# Add HSM to ssh-agent
-ssh-add -s $PICOHSM_PKCS11_MODULE
-
 # Verify
-ssh-add -L
+age-plugin-picohsm --list --pin $YOUR_PIN
 ```
+
+The new HSM now has identical keys. You can use it interchangeably with any
+other HSM containing the same keys.
 
 ---
 
-## 11. Backup Strategy Summary
+## 9. Backup Strategy Summary
 
 ### What to Back Up
 
@@ -533,15 +465,6 @@ ssh-add -L
 | `ssh-key-backup.bin`  | Your SSH key (encrypted)  | SSH recovery          |
 | Recipient strings     | Let others encrypt to you | Sharing with contacts |
 | Identity strings      | Reference for decryption  | Convenience           |
-
-
-### Security Principles
-
-1. **Keys never exist as plaintext** outside the HSM
-2. **DKEK + wrapped files** together enable recovery
-3. **Either alone is useless** - defense in depth
-4. **Multiple HSMs** provide operational redundancy
-5. **Geographic distribution** of backups protects against disasters
 
 ---
 
