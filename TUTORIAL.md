@@ -191,9 +191,16 @@ Save the identity to a file and use it with age -d -i <file>
 Save the identity string to a file:
 
 ```bash
-echo "AGE-PLUGIN-PICOHSM-1Q9GFU..." > ~/.age-identity.txt
-chmod 600 ~/.age-identity.txt
+mkdir -p ~/.config/age
+echo "AGE-PLUGIN-PICOHSM-1Q9GFU..." > ~/.config/age/age-identity.txt
+chmod 600 ~/.config/age/age-identity.txt
 ```
+
+Tools that use age identities can be configured to use this file:
+
+- **age**: `age -d -i ~/.config/age/age-identity.txt secret.age`
+- **passage**: `export PASSAGE_IDENTITIES_FILE="$HOME/.config/age/age-identity.txt"`
+- **sops-nix**: `sops.age.keyFile = "/home/youruser/.config/age/age-identity.txt";`
 
 ### Generate SSH Key
 
