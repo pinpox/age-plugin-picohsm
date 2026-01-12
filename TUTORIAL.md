@@ -202,6 +202,28 @@ Tools that use age identities can be configured to use this file:
 - **passage**: `export PASSAGE_IDENTITIES_FILE="$HOME/.config/age/age-identity.txt"`
 - **sops-nix**: `sops.age.keyFile = "/home/youruser/.config/age/age-identity.txt";`
 
+For **passage**, also configure the recipients (public keys to encrypt to):
+
+```bash
+mkdir -p ~/.passage/store
+cat > ~/.passage/store/.age-recipients << 'EOF'
+age1picohsm1qv5te...
+age1backupkey...
+EOF
+```
+
+Or via home-manager (since the file only contains public keys):
+
+```nix
+home.file.".passage/store/.age-recipients".text = ''
+  age1picohsm1qv5te...
+  age1backupkey...
+'';
+```
+
+Adding multiple recipients (e.g., HSM + offline backup key) allows decryption with
+either key. Generate a backup key with `age-keygen` and store it securely offline.
+
 ### Generate SSH Key
 
 ```bash
