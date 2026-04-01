@@ -18,6 +18,10 @@
           vendorHash = "sha256-khGb9VtM0KXgOwBRNkV68/mgLlUem0B6qjhun8MRVq8=";
           subPackages = [ "cmd/age-plugin-picohsm" ];
 
+          postInstall = ''
+            install -Dm755 $src/picohsm-askpass $out/bin/picohsm-askpass
+          '';
+
           meta = with pkgs.lib; {
             description = "age plugin for Pico HSM hardware security modules";
             homepage = "https://github.com/pinpox/age-plugin-picohsm";
