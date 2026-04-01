@@ -35,6 +35,18 @@ func readPINAskpass(askpass, prompt string) (string, error) {
 	return strings.TrimRight(string(out), "\r\n"), nil
 }
 
+// readPINAskpassFromEnv tries PICOHSM_ASKPASS and SSH_ASKPASS only.
+// Returns empty string if neither is set (does not fall back to terminal).
+func readPINAskpassFromEnv(prompt string) (string, error) {
+	if askpass := os.Getenv("PICOHSM_ASKPASS"); askpass != "" {
+		return readPINAskpass(askpass, prompt)
+	}
+	if askpass := os.Getenv("SSH_ASKPASS"); askpass != "" {
+		return readPINAskpass(askpass, prompt)
+	}
+	return "", nil
+}
+
 // readPIN reads a PIN without echoing it. It tries, in order:
 //  1. PICOHSM_ASKPASS program (graphical prompt)
 //  2. SSH_ASKPASS program (graphical prompt, used when no terminal is available)
@@ -326,8 +338,11 @@ phase2:
 	}
 	defer h.Close()
 
-	// Get PIN from environment or prompt
+	// Get PIN from environment, askpass, or age protocol prompt
 	pin := os.Getenv("PICOHSM_PIN")
+	if pin == "" {
+		pin, _ = readPINAskpassFromEnv("Enter HSM PIN")
+	}
 	if pin == "" {
 		var err error
 		pin, err = proto.RequestSecret("Enter HSM PIN:")
