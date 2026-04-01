@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 
@@ -21,23 +22,48 @@ import (
 
 const version = "0.1.0"
 
-// readPIN reads a PIN from the terminal without echoing it.
-func readPIN(prompt string) (string, error) {
-	// Open /dev/tty directly to ensure we read from the terminal
-	// even if stdin is redirected
-	tty, err := os.Open("/dev/tty")
+// readPINAskpass uses an external program (like ssh-askpass or pinentry) to
+// prompt for the PIN graphically. It checks PICOHSM_ASKPASS first, then
+// SSH_ASKPASS.
+func readPINAskpass(askpass, prompt string) (string, error) {
+	cmd := exec.Command(askpass, prompt)
+	cmd.Stdin = nil
+	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("failed to open terminal: %w", err)
+		return "", fmt.Errorf("askpass program %q failed: %w", askpass, err)
 	}
-	defer tty.Close()
+	return strings.TrimRight(string(out), "\r\n"), nil
+}
 
-	fmt.Print(prompt)
-	pinBytes, err := term.ReadPassword(int(tty.Fd()))
-	fmt.Println() // newline after hidden input
-	if err != nil {
-		return "", err
+// readPIN reads a PIN without echoing it. It tries, in order:
+//  1. PICOHSM_ASKPASS program (graphical prompt)
+//  2. SSH_ASKPASS program (graphical prompt, used when no terminal is available)
+//  3. Direct terminal input via /dev/tty
+func readPIN(prompt string) (string, error) {
+	// Prefer PICOHSM_ASKPASS — always use it when set.
+	if askpass := os.Getenv("PICOHSM_ASKPASS"); askpass != "" {
+		return readPINAskpass(askpass, prompt)
 	}
-	return string(pinBytes), nil
+
+	// Try terminal input first, fall back to SSH_ASKPASS if no terminal.
+	tty, err := os.Open("/dev/tty")
+	if err == nil {
+		defer tty.Close()
+		fmt.Print(prompt)
+		pinBytes, err := term.ReadPassword(int(tty.Fd()))
+		fmt.Println() // newline after hidden input
+		if err != nil {
+			return "", err
+		}
+		return string(pinBytes), nil
+	}
+
+	// No terminal available — try SSH_ASKPASS.
+	if askpass := os.Getenv("SSH_ASKPASS"); askpass != "" {
+		return readPINAskpass(askpass, prompt)
+	}
+
+	return "", fmt.Errorf("no terminal available and neither PICOHSM_ASKPASS nor SSH_ASKPASS is set")
 }
 
 func main() {
