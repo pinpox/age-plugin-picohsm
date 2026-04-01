@@ -49,7 +49,7 @@ func readPIN(prompt string) (string, error) {
 	tty, err := os.Open("/dev/tty")
 	if err == nil {
 		defer tty.Close()
-		fmt.Print(prompt)
+		fmt.Print(prompt + ": ")
 		pinBytes, err := term.ReadPassword(int(tty.Fd()))
 		fmt.Println() // newline after hidden input
 		if err != nil {
@@ -412,7 +412,7 @@ func generateKey(modulePath, pin, label string) error {
 	// Get PIN if not provided
 	if pin == "" {
 		var err error
-		pin, err = readPIN("Enter HSM PIN: ")
+		pin, err = readPIN("Enter HSM PIN")
 		if err != nil {
 			return fmt.Errorf("failed to read PIN: %w", err)
 		}
@@ -479,7 +479,7 @@ func listKeys(modulePath, pin string) error {
 	// Get PIN if not provided
 	if pin == "" {
 		var err error
-		pin, err = readPIN("Enter HSM PIN: ")
+		pin, err = readPIN("Enter HSM PIN")
 		if err != nil {
 			return fmt.Errorf("failed to read PIN: %w", err)
 		}
@@ -551,7 +551,7 @@ func convertIdentityToRecipient(identityStr, modulePath, pin string) error {
 	// Get PIN if not provided
 	if pin == "" {
 		var err error
-		pin, err = readPIN("Enter HSM PIN: ")
+		pin, err = readPIN("Enter HSM PIN")
 		if err != nil {
 			return fmt.Errorf("failed to read PIN: %w", err)
 		}

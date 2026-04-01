@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# picohsm-askpass — askpass wrapper that caches the PIN in the Linux kernel
+# keyring for 5 minutes. Use with:
+#   export PICOHSM_ASKPASS=/path/to/picohsm-askpass
+#
+# Requires: keyutils, and an askpass backend (ksshaskpass, ssh-askpass, etc.)
+#
+# The cache timeout can be changed via PICOHSM_PIN_TIMEOUT (in seconds,
+# default 300). Set to 0 to disable caching.
+
+set -euo pipefail
+
+TIMEOUT="${PICOHSM_PIN_TIMEOUT:-300}"
+KEY_NAME="picohsm_pin"
+
+# Try to read cached PIN from the kernel keyring.
+if KEY_ID=$(keyctl request user "$KEY_NAME" @s 2>/dev/null); then
+    keyctl pipe "$KEY_ID"
+    exit 0
+fi
+
+# No cached PIN — prompt the user via an askpass program.
+ASKPASS="${PICOHSM_ASKPASS_BACKEND:-ssh-askpass}"
+PIN=$("$ASKPASS" "${1:-Enter HSM PIN}") || exit 1
+
+# Cache the PIN if timeout is non-zero.
+if [ "$TIMEOUT" -gt 0 ]; then
+    KEY_ID=$(printf '%s' "$PIN" | keyctl padd user "$KEY_NAME" @s)
+    keyctl timeout "$KEY_ID" "$TIMEOUT"
+fi
+
+printf '%s' "$PIN"

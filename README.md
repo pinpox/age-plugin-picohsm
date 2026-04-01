@@ -85,6 +85,47 @@ To use the same key on multiple Pico HSMs:
 
 See [Pico HSM backup documentation](https://github.com/polhenarejos/pico-hsm/blob/master/doc/backup-and-restore.md).
 
+## PIN Entry
+
+By default, the plugin prompts for the PIN in the terminal. For graphical
+prompts (useful when running in the background or from scripts), set
+`PICOHSM_ASKPASS` to an askpass-compatible program:
+
+```bash
+export PICOHSM_ASKPASS=ksshaskpass
+age-plugin-picohsm --list
+```
+
+The plugin also respects `SSH_ASKPASS` as a fallback when no terminal is
+available.
+
+### PIN Caching with picohsm-askpass
+
+The included `picohsm-askpass` script wraps any askpass program and caches the
+PIN in the Linux kernel keyring, so you only get prompted once per session:
+
+```bash
+export PICOHSM_ASKPASS=./picohsm-askpass
+export PICOHSM_ASKPASS_BACKEND=ksshaskpass  # or any askpass program
+age-plugin-picohsm --list
+```
+
+The cache expires after 5 minutes by default. Configure via `PICOHSM_PIN_TIMEOUT`
+(in seconds, 0 to disable caching):
+
+```bash
+export PICOHSM_PIN_TIMEOUT=600  # 10 minutes
+```
+
+Requires `keyutils` for the kernel keyring.
+
+You can also skip all prompting by setting `PICOHSM_PIN` directly (not
+recommended for interactive use):
+
+```bash
+PICOHSM_PIN=123456 age -d -i identity.txt secret.age
+```
+
 ## How it works
 
 ### Encryption (recipient-v1)
